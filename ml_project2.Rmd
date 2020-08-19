@@ -1,0 +1,339 @@
+---
+title: "Weight Lifting Exercise Prediction"
+subtittle: "Coursera Johns Hopkins Practical Machine Learning Course"
+author: "Jiri Ludvik"
+date: "19/08/2020"
+output: html_document
+---
+
+```{r include=FALSE}
+knitr::opts_chunk$set(
+        #fig.height = 4,
+        fig.path='figures/',
+        echo=TRUE, 
+        warning=FALSE, 
+        message=FALSE)
+options("scipen"=100, "digits"=4)
+
+library(readr) # used to read data
+library(caret) # supports modelling and preprocessing
+library(rstatix) # used to check normality of data
+```
+
+## Summary
+This paper aims to predict the manner in which the test subjects did weightlifting exercise. Random forest was found to be the best performing algorithm for this prediction. Highest model performance was achieved using repeated ten-fold cross validation with three repeats, and tuning parameter `mtry`, representing the number of variables available for splitting at each tree node, set equal to 13. Predictive model with these parameters achieved out-of-sample accuracy 98.8%.
+
+## Source Data
+Predictive model has been developed based on data from accelerometers attached to the body of test subjects, produced as part of Human Activity Recognition project (har) [http://groupware.les.inf.puc-rio.br/har]. Version of the data used is available as follows:
+
+* (Training data) [https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv]
+* (Test data) [https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv]
+
+```{r include=FALSE}
+#Load training data, convert to appropriate data types and clean up NAs
+pml_training <- 
+  read_csv ("pml-training.csv", 
+            col_types = cols(
+              .default = "n", 
+              classe="f", 
+              new_window=col_factor(levels=c("yes", "no"), ordered=TRUE), 
+              user_name="_", 
+              cvtd_timestamp="_",
+              num_window="_",
+              raw_timestamp_part_1="_", 
+              raw_timestamp_part_2="_"), 
+            na = c("", "NA", "#DIV/0!"))
+# Drop the unnamed variable with row ids
+pml_training$X1<-NULL
+# Convert new_window to from factor to binary var
+pml_training$new_window <-class2ind(pml_training$new_window, drop2nd = TRUE)
+# Split pml_training data set into training and test (AKA held-out)
+pml_train_index<-as.vector(createDataPartition(pml_training$classe, p = 0.6, list = FALSE))
+training_input<-pml_training[pml_train_index,]
+validation_input<-pml_training[-pml_train_index,]
+```
+
+## Data Exploration & Pre-Processing
+
+Exploration of data dimensions shows training data set has `r ncol(pml_training)` columns - including response variable `classe`, several columns with metadata and over a hundred numeric predictor variables. As training data set contains a large `r nrow(pml_training)` number of observations,  training data was further split it into the training sample (60%) -used to train the model, and the validation sample (40%) - used to reconfirm out-of-sample error rate.
+
+```{r include=FALSE}
+#Remove near-zero variables from training_input
+training_tmp1_preobj <- preProcess(as.data.frame(training_input[,-154]), method=c("nzv"))
+training_tmp1 <- predict(training_tmp1_preobj, training_input[,-154])
+#Remove highly correlated variables from training data 
+tmp_highly_correlated <- findCorrelation(cor(training_tmp1,use="pairwise.complete.obs"), cutoff=(0.75),verbose = FALSE)
+training_tmp2 <- training_tmp1[,-tmp_highly_correlated]
+# Impute missing values and generate cleaned-up training data
+training_tmp3_preobj<-preProcess(training_tmp2, method="medianImpute")
+training_clean <- predict(training_tmp3_preobj, training_tmp2)
+# Add classe back to the cleaned-up training dataset
+training_clean$classe<-training_input$classe
+
+#sample_index <- sample(1:nrow(training_clean), 5000)
+#mshapiro <- mshapiro_test(data=training_clean[sample_index,-71])
+```
+
+Variables with near zero variance and highly correlated variables have been removed to reduce the number of predictors, with missing values estimated via medians.  Shapiro-Wilk multinomial test was performed on a predictor variables with resulting p-value `r mshapiro_test(data=training_clean[sample_index,-72])` suggesting data is not normally distributed, which has been taken into account in subsequent steps.
+
+## Algorithm Selection
+To establish the most suitable algorithm to be used in predictive model, a number of classification algorithms, including CART (Decision Tree), Naive Bayes, Linear and Radial Support Vector Models and Random Forest, have been assessed The in-sample accuracy of models built using the identified algorithms (with and default model parameters) has been estimated as follows.
+
+```{r echo=FALSE}
+rownames(model_perf_df) <- NULL
+model_perf_df
+```
+
+A plot of accuracy metrics below confirms this result.
+```{r echo=FALSE}
+bwplot(resamps, layout = c(2, 1))
+```
+
+As predictive model using Random Forest algorithm has shown the highest accuracy out of assessed algorithms, it was chosen as the basis for the final model.
+
+## Model Tuning
+In order to improve model performance, parameters of the predictive model using Random Forest algorithm have been tuned as follows:
+
+Firstly, to reduce the risk of over-fitting, we have used repeated ten-fold cross validation with three repeats.
+
+Secondly, random forest tuning parameter `mtry`, representing the number of variables available for splitting at each tree node, has been optimised following the procedure described in (Tune Machine Learning Algorithms in R) [https://machinelearningmastery.com/tune-machine-learning-algorithms-in-r/].
+
+```{r echo=FALSE}
+tuning_res_df[order(tuning_res_df$Accuracy, decreasing=TRUE),]
+```
+
+As we can see, the model with highest accuracy was found using Grid Search. It uses `mtry` equal to `r res4$mtry`, achieving the estimated accuracy of `r round(res4$Accuracy,4)*100`%.
+
+The relationship between the estimated accuracy and the value of the tuning parameter `mtry` was subsequently examined using the resampling plots.
+```{r echo=FALSE}
+par(mar=c(3,2,2,2), mfrow = c(1, 2), pty="s")
+plot(rf_gridsearch, main="Grid Search", xlab="mtry")
+plot(rf_random, main="Random Search", xlab="mtry")
+```
+
+As we can see in the plots, estimated model accuracy is increasing with an  increase in `mtry` from 1 to 13, and declining with subsequent mtry values. From this we can conclude that `mtry` value of 13 is likely to yield the highest accuracy with the selected cross-validation parameters.
+
+## Model Validation & Testing
+To reconfirm the out-of-sample error, the best performing model has been used to generate predictions using the held-out validation sample.  Confusion matrix showing the resulting performance metrics is as follows:
+```{r echo=FALSE}
+cm$table
+```
+
+Overall (out-of-sample) statistics are as follows.
+```{r echo=FALSE}
+cm$overall
+```
+
+As expected for large sample sizes, the out-of-sample accuracy `r cm$overall['Accuracy']`, is very close to the model accuracy estimated in previous steps.
+
+Finally,the model has been used to predict the 'grades' corresponding to the manner the exercises have been performed using the test data sample:
+
+```{r echo=FALSE}
+testing_predict
+```
+
+## Conclusions
+
+Random forest was found to be the best performing algorithm for predicting how well do test subjects perform weight lifting exercises done, using data from the attached accelerometers. Best model performance was achieved using ten-fold cross validation with three repeats, and tuning parameter `mtry`, representing the number of variables available for splitting at each tree node, set equal to 13. Predictive model with such parameters was shown to achieve 98.8% out-of-sample accuracy.
+
+## Appendix A. R Code
+
+### Dependencies
+```{r eval=FALSE}
+library(readr) # used to read data
+library(caret) # supports modelling and preprocessing
+library(rstatix) # used to check normality of data
+```
+
+### Training Data Loading & Cleansing
+```{r eval=FALSE}
+#Load training data, convert to appropriate data types and clean up NAs
+pml_training <- 
+  read_csv ("pml-training.csv", 
+            col_types = cols(
+              .default = "n", 
+              classe="f", 
+              new_window=col_factor(levels=c("yes", "no"), ordered=TRUE), 
+              user_name="_", 
+              cvtd_timestamp="_",
+              num_window="_",
+              raw_timestamp_part_1="_", 
+              raw_timestamp_part_2="_"), 
+            na = c("", "NA", "#DIV/0!"))
+# Drop the unnamed variable with row ids
+pml_training$X1<-NULL
+# Convert new_window to from factor to binary var
+pml_training$new_window <-class2ind(pml_training$new_window, drop2nd = TRUE)
+# Split pml_training data set into training and test (AKA held-out)
+pml_train_index<-as.vector(createDataPartition(pml_training$classe, p = 0.6, list = FALSE))
+training_input<-pml_training[pml_train_index,]
+validation_input<-pml_training[-pml_train_index,]
+```
+
+### Training Data Pre-Processing
+```{r eval=FALSE}
+#Remove near-zero variables from training_input
+training_tmp1_preobj <- preProcess(as.data.frame(training_input[,-154]), method=c("nzv"))
+training_tmp1 <- predict(training_tmp1_preobj, training_input[,-154])
+#Remove highly correlated variables from training data 
+tmp_highly_correlated <- findCorrelation(cor(training_tmp1,use="pairwise.complete.obs"), cutoff=(0.75),verbose = FALSE)
+training_tmp2 <- training_tmp1[,-tmp_highly_correlated]
+# Impute missing values and generate cleaned-up training data
+training_tmp3_preobj<-preProcess(training_tmp2, method="medianImpute")
+training_clean <- predict(training_tmp3_preobj, training_tmp2)
+# Add classe back to the cleaned-up training dataset
+training_clean$classe<-training_input$classe
+```
+
+### Algorithm Selection
+```{r eval=FALSE}
+
+# Decision Trees (CART)
+set.seed(123)
+rpart_fit <- train(classe ~ .,method="rpart",data=training_clean)
+print(rpart_fit)
+resA<-as.data.frame(rpart_fit$results[which.max(rpart_fit$results[,2]),])
+
+# Naive Bayes
+set.seed(123)
+nb_fit <- train(classe ~ ., method="nb", data=training_clean)
+print(nb_fit)
+resB<-as.data.frame(nb_fit$results[which.max(nb_fit$results[,2]),])
+
+# Random Forest
+set.seed(123)
+rf_fit <- train(classe ~ ., method="rf", data=training_clean)
+print(rf_fit)
+resC<-as.data.frame(rf_fit$results[which.max(rf_fit$results[,2]),])
+
+# SVM Linear
+set.seed(123)
+training_tmp4_preobj <- preProcess(training_clean, method= c("center","scale"))
+training_normalised <- predict(training_tmp4_preobj, training_clean)
+svmlinear_fit <- train(classe ~., data = training_normalised, method = "svmLinear")
+print(svmlinear_fit)
+resD<-as.data.frame(svmlinear_fit$results[which.min(svmlinear_fit$results[,2]),])
+
+# SVM Radial
+set.seed(123)
+svmradial_fit <- train(classe ~., data = training_normalised, method = "svmRadial")
+print(svmradial_fit)
+resE<-as.data.frame(svmradial_fit$results[which.min(svmradial_fit$results[,2]),])
+
+# Summarise Algorithm Performance
+model_perf_df<-data.frame(Model=c('Decision Tree','Naive Bayes', 'Random Forest','SVM Linear','SVM Radial'),Accuracy=c(resA$Accuracy,resB$Accuracy,resC$Accuracy, resD$Accuracy, resE$Accuracy))
+model_perf_df <- model_perf_df[order(-model_perf_df$Accuracy),]
+print('Algorithm Performance')
+print(model_perf_df)
+
+## TEST THIS
+# Plot comparative error rates
+resamps <- resamples(list(CART = rpart_fit,
+                          Naive.Bayes = nb_fit,
+                          Random.Forest = rf_fit,
+                          SVM.Linear=svmlinear_fit,
+                          SVM.Radial=svmradial_fit))
+
+bwplot(resamps, layout = c(2, 1))
+
+```
+
+### Model Tuning
+```{r eval=FALSE}
+# Default Random Forest Tuning Parameters
+train_control2 <- trainControl(method="repeatedcv", number=10, repeats=3)
+mtry <- sqrt(ncol(training_clean)-1)
+tunegrid <- expand.grid(.mtry=mtry)
+set.seed(123)
+rf_default <- train(classe~., data=training_clean, method="rf", 
+                  metric="Accuracy", tuneGrid=tunegrid, trControl=train_control2)
+print(rf_default)
+res2<-as.data.frame(rf_default$results[which.max(rf_default$results[,2]),])
+
+# Random Forest Tuning Parameters Random Search
+train_control3 <- trainControl(method="repeatedcv", number=10, repeats=3, search="random")
+set.seed(123)
+rf_random <- train(classe~., data=training_clean, method="rf", 
+                   metric="Accuracy", tuneLength=15, trControl=train_control3)
+print(rf_random)
+res3<-as.data.frame(rf_random$results[which.max(rf_random$results[,2]),])
+
+# Random Forest Tuning Parameters Grid Search
+train_control4 <- trainControl(method="repeatedcv", number=10, repeats=3, search="grid")
+tunegrid <- expand.grid(.mtry=c(1:15))
+set.seed(123)
+rf_gridsearch <- train(classe~., data=training_clean, method="rf", 
+                       metric="Accuracy", tuneGrid=tunegrid, trControl=train_control4)
+rf_gridsearch
+print(rf_gridsearch)
+res4<-as.data.frame(rf_gridsearch$results[which.max(rf_gridsearch$results[,2]),])
+
+#  Report on Models Performance
+print('Best Model Performance')
+tuning_res_df<-data.frame(Model=c('Baseline','Random Search', 'Grid Search'), Accuracy=c(res2$Accuracy,res3$Accuracy,res4$Accuracy))
+print(tuning_res_df)
+
+# Plot resampling profiles
+par(mar=c(3,2,2,2), mfrow = c(2, 1))
+plot(rf_gridsearch)
+plot(rf_random)
+```
+
+### Model Validation
+
+```{r eval=FALSE}
+
+## Validation Data Pre-Processing
+
+#Remove near-zero variance variables
+validation_tmp1 <- predict(training_tmp1_preobj, validation_input[,-154])
+#Remove highly correlated variables
+validation_tmp2 <- validation_tmp1[,-tmp_highly_correlated]
+# Impute missing values
+validation_clean <- predict(training_tmp3_preobj, validation_tmp2)
+validation_clean$classe <-validation_input$classe
+
+## Generate Predictions and Confusion Matrix Using Validation Sample 
+validation_rf_predict<-predict(rf_random,validation_clean)
+cm<-confusionMatrix(predict(rf_random,validation_clean), validation_input$classe)
+print('Confusion Matrix')
+print(cm$table)
+print('Overall Statistics')
+print(cm$overall)
+```
+
+### Model Testing
+```{r eval=FALSE}
+## Testing Data Loading & Cleansing
+
+#Load testing data, convert to appropriate data types and clean up NAs
+testing_input <- 
+  read_csv ("pml-testing.csv", 
+            col_types = cols(
+              .default = "n", 
+              new_window=col_factor(levels=c("yes", "no"), ordered=TRUE), 
+              user_name="_", 
+              cvtd_timestamp="_",
+              num_window="_",
+              raw_timestamp_part_1="_", 
+              raw_timestamp_part_2="_"), 
+            na = c("", "NA", "#DIV/0!"))
+# Drop the unnamed variable with row ids
+testing_input$X1<-NULL
+# Convert new_window to from factor to binary var
+testing_input$new_window <-class2ind(testing_input$new_window, drop2nd = TRUE)
+
+## Testing Data Pre-Processing
+#Remove near-zero variance variables
+testing_tmp1 <- predict(training_tmp1_preobj, testing_input)
+#Remove highly correlated variables
+testing_tmp2 <- testing_tmp1[,-tmp_highly_correlated]
+# Impute missing values
+testing_clean <- predict(training_tmp3_preobj, testing_tmp2)
+
+## Generate Predictions
+testing_predict<-predict(rf_gridsearch,testing_clean)
+testing_predict
+```
+
+
